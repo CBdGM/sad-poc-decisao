@@ -1,0 +1,19 @@
+# Segredos: qualquer .env, exceto o modelo sem valores
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Ambiente Python e caches
+.venv/
+__pycache__/
+*.pyc
+
+# Dados baixados e resultados gerados (refaça com fetch_issues.py / run_eval.py)
+data/
+results/
+
+# Sistema / editores
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,5 @@
+laya==0.4.12
+python-dotenv==1.2.4
+requests==2.34.2
+streamlit==1.66.0
+scikit-learn==1.9.1

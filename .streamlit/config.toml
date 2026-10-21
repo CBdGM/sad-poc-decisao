@@ -1,0 +1,8 @@
+[server]
+# O vigia de arquivos inspeciona os módulos do transformers e reinicia o script no meio da execução.
+fileWatcherType = "none"
+headless = true
+port = 8501
+
+[browser]
+gatherUsageStats = false
