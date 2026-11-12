@@ -87,9 +87,14 @@ def audit_offline(run_dir, windows):
     ds = ROOT / cfg.get("dataset", "")
     if ds.is_file():
         gold = {json.loads(l)["number"]: json.loads(l)["gold"] for l in ds.open()}
-        wrong = [n for n, g in zip(df.number, df.gold) if gold.get(n) != g]
+        missing = sorted({n for n in df.number if n not in gold})
+        wrong = sorted({n for n, g in zip(df.number, df.gold) if n in gold and gold[n] != g})
         say(FAIL if wrong else OK, f"gabarito confere com {ds.relative_to(ROOT)}"
-            + (f" — divergem: {sorted(set(wrong))[:5]}" if wrong else ""))
+            + (f" — divergem: {wrong[:5]}" if wrong else "")
+            + (f" ({len(df.number.unique()) - len(missing)} issues conferidas)" if missing else ""))
+        if missing:  # o conjunto foi baixado de novo depois desta execução
+            say(WARN, f"{len(missing)} issues da execução não estão mais no arquivo (baixado de novo "
+                      "depois?); o gabarito delas não pôde ser conferido")
     else:
         say(WARN, f"arquivo de issues {cfg.get('dataset')} não encontrado; gabarito não conferido")
 
