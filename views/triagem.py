@@ -13,7 +13,7 @@ import streamlit as st
 import fixer
 import triage as tr
 from clean import clean_issue
-from fetch_issues import fetch_numbers, fetch_open
+from fetch_issues import canonical_repo, fetch_numbers, fetch_open
 from models import JevModel
 from shared import make_model
 
@@ -61,6 +61,10 @@ if go:
         try:
             labels = [l.strip() for l in skip.split(",") if l.strip()]
             nums = [int(x) for x in re.findall(r"\d+", numbers_txt)]
+            current = canonical_repo(repo)
+            if current.lower() != repo.lower():
+                st.write(f"{repo} agora se chama {current}; usando o nome novo.")
+            repo = current
             if nums:
                 st.write(f"Buscando as issues {', '.join(f'#{n}' for n in nums)} no GitHub…")
                 issues = fetch_numbers(repo, nums)

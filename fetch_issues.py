@@ -111,6 +111,16 @@ def collect(s, repo, gold, labels, conflict, since_list, want):
     return chosen
 
 
+def canonical_repo(repo, s=None):
+    """Nome atual do repositório. A busca do GitHub não segue renomeações (facebook/react → react/react)
+    e devolve 422; a API de repositórios segue."""
+    r = (s or session()).get(f"{API}/repos/{repo}", timeout=30)
+    if r.status_code == 404:
+        raise ValueError(f"Repositório {repo} não encontrado (ou privado).")
+    r.raise_for_status()
+    return r.json()["full_name"]
+
+
 def fetch_open(repo, limit=20, days=30, skip_labels=(), s=None):
     """Issues ABERTAS (sem PRs) criadas nos últimos `days` dias, mais novas primeiro.
 
