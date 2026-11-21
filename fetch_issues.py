@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -108,6 +109,58 @@ def collect(s, repo, gold, labels, conflict, since_list, want):
         print(f"  {gold}: {len(chosen)} issues desde {since}", file=sys.stderr)
         until = since  # a próxima janela termina onde esta começou
     return chosen
+
+
+def canonical_repo(repo, s=None):
+    """Nome atual do repositório. A busca do GitHub não segue renomeações (facebook/react → react/react)
+    e devolve 422; a API de repositórios segue."""
+    r = (s or session()).get(f"{API}/repos/{repo}", timeout=30)
+    if r.status_code == 404:
+        raise ValueError(f"Repositório {repo} não encontrado (ou privado).")
+    r.raise_for_status()
+    return r.json()["full_name"]
+
+
+def fetch_open(repo, limit=20, days=30, skip_labels=(), s=None):
+    """Issues ABERTAS (sem PRs) criadas nos últimos `days` dias, mais novas primeiro.
+
+    Usada pela aba Triagem. `skip_labels`: issues com qualquer uma dessas labels ficam de fora
+    (ex.: as já triadas). Não grava nada em disco.
+    """
+    s = s or session()
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    q = f"repo:{repo} is:issue is:open created:>={since}"
+    skip, out, page = set(skip_labels), [], 1
+    while len(out) < limit:
+        data = get(s, f"{API}/search/issues", q=q, sort="created", order="desc",
+                   per_page=100, page=page).json()
+        for it in data["items"]:
+            names = {l["name"] for l in it["labels"]}
+            if "pull_request" in it or names & skip:
+                continue
+            out.append({"number": it["number"], "title": it["title"], "body": it.get("body") or "",
+                        "labels": sorted(names), "created_at": it["created_at"],
+                        "url": it["html_url"], "comments": it.get("comments", 0)})
+            if len(out) >= limit:
+                break
+        if len(data["items"]) < 100 or page * 100 >= min(data["total_count"], 1000):
+            break
+        page += 1
+    return out
+
+
+def fetch_numbers(repo, numbers, s=None):
+    """Issues escolhidas pelo número, abertas ou fechadas. PRs ficam de fora. Não grava nada em disco."""
+    s = s or session()
+    out = []
+    for n in numbers:
+        it = get(s, f"{API}/repos/{repo}/issues/{n}").json()
+        if "pull_request" in it:
+            continue
+        out.append({"number": it["number"], "title": it["title"], "body": it.get("body") or "",
+                    "labels": sorted(l["name"] for l in it["labels"]), "created_at": it["created_at"],
+                    "url": it["html_url"], "comments": it.get("comments", 0), "state": it["state"]})
+    return out
 
 
 def dataset_path(repo: str) -> Path:

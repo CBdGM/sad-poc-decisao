@@ -67,6 +67,31 @@ class LayaModel(DecisionModel):
         self.last = {"served_by": self.served_by}
         return float(r["answers"]["q"]["noul"])
 
+    def ask(self, state: str, questions: dict) -> dict:
+        """Várias perguntas tipadas de uma vez; respostas normalizadas (ver normalize_answer)."""
+        r = self.agent.predict(state, questions)
+        self.last = {"served_by": self.served_by}
+        return {qid: normalize_answer(a) for qid, a in r["answers"].items()}
+
+
+def normalize_answer(ans: dict) -> dict:
+    """Formato comum para Laya e Jev (os dois devolvem a mesma estrutura, mas a "confidence"
+    de cada um usa uma fórmula diferente; por isso a confiança aqui é a probabilidade do nível
+    escolhido, comparável entre os dois).
+
+    noul  -> {"type": "noul", "p": P(sim)}
+    score -> {"type": "score", "probs": [p0, p1, ...], "level": índice mais provável,
+              "p_level": probabilidade desse nível, "score": média ponderada}
+    """
+    if ans.get("type") == "noul":
+        return {"type": "noul", "p": float(ans["noul"])}
+    if ans.get("type") == "score":
+        probs = [float(ans["probabilities"][str(i)]) for i in range(len(ans["probabilities"]))]
+        level = max(range(len(probs)), key=probs.__getitem__)
+        return {"type": "score", "probs": probs, "level": level, "p_level": probs[level],
+                "score": float(ans["score"])}
+    raise ValueError(f"tipo de resposta não suportado: {ans}")
+
 
 # ---------------------------------------------------------------- Jev (TypeSafe, nuvem)
 
@@ -104,8 +129,16 @@ class JevModel(DecisionModel):
         return bool(os.getenv("TYPESAFE_API_KEY"))
 
     def ask_noul(self, state: str, question: str) -> float:
-        body = {"model": self.model, "state": state,
-                "questions": {"is_bug": {"type": "noul", "instructions": question}}}
+        data = self._post({"model": self.model, "state": state,
+                           "questions": {"is_bug": {"type": "noul", "instructions": question}}})
+        return parse_jev_noul(data, "is_bug")
+
+    def ask(self, state: str, questions: dict) -> dict:
+        """Várias perguntas tipadas numa única chamada; respostas normalizadas."""
+        data = self._post({"model": self.model, "state": state, "questions": questions})
+        return {qid: normalize_answer(a) for qid, a in data["answers"].items()}
+
+    def _post(self, body: dict) -> dict:
         for attempt in range(5):
             r = self.s.post(f"{self.base}/v1/systemone", json=body, timeout=60)
             if r.status_code in (429, 529):  # rate limit / sobrecarga: backoff
@@ -119,7 +152,7 @@ class JevModel(DecisionModel):
                          "request_id": r.headers.get("x-typesafe-request-id", ""),
                          "server_ms": float(upstream) if upstream else None,
                          "retries": attempt}
-            return parse_jev_noul(data, "is_bug")
+            return data
         raise RuntimeError("Jev: muitas tentativas com 429/529")
 
 

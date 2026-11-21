@@ -16,6 +16,15 @@ severidade. A arquitetura é **dual**:
 Depois compara a resposta com o rótulo que os mantenedores do projeto deram à issue (bug ou não bug)
 e mede **quanto o modelo acerta** e **quanto tempo ele leva**.
 
+> **v2 em andamento (branch `app-triagem`).** O app agora tem duas páginas:
+> - **🩺 Triagem (nova):** você informa um repositório, e o modelo de decisão classifica cada issue
+>   **aberta**: é bug?, severidade e se precisa de revisão humana.
+> - **📊 Avaliação:** a interface original, para comparar modelos.
+>
+> Para os bugs graves, um **LLM tradicional lê o código do repositório e sugere a correção**
+> (Sistema 2, fase 2 do plano). Detalhes em [6](#6-a-interface-campo-por-campo),
+> [7.8](#78-triagem-três-perguntas-e-a-regra-de-revisão-humana) e [7.9](#79-sugestão-de-fix-sistema-2).
+
 ---
 
 ## Sumário
@@ -125,7 +134,16 @@ source .venv/bin/activate
 streamlit run app.py
 ```
 
-Abra **http://localhost:8501** no navegador. Um uso típico:
+Abra **http://localhost:8501** no navegador. O menu à esquerda tem duas páginas.
+
+**🩺 Triagem** (abre primeiro):
+
+1. Digite o repositório (ex.: `apache/airflow`), quantas issues e a janela em dias.
+2. Escolha o modelo de decisão e clique em **Analisar**. Com o Jev, 20 issues levam poucos segundos.
+3. Veja o resumo, filtre a tabela (só bugs, revisão humana, severidade) e **clique numa linha**
+   para ver o detalhe da issue.
+
+**📊 Avaliação**, um uso típico:
 
 1. **Barra lateral → 1 · Dados:** digite o repositório (ex.: `apache/airflow`), confira as labels
    sugeridas, escolha quantas issues por classe e clique em **⬇️ Baixar issues**.
@@ -201,6 +219,30 @@ reconhecer o mesmo conjunto.
 | `--summarize` | desligado | Usa o resumo do Ollama quando a issue não cabe no modelo (na prática, só na Laya) |
 | `--limit N` | todas | Avalia só N issues, alternando bug e não bug para manter o equilíbrio |
 
+**`triage.py`**: a Triagem pelo terminal (mesmo resultado da página, salvo em `results/triage/`).
+
+```bash
+python triage.py --repo apache/airflow --limit 20 --days 30 --model jev
+```
+
+| Opção | Padrão | O que faz |
+|---|---|---|
+| `--repo owner/nome` | *(obrigatório)* | Repositório |
+| `--limit N` | `20` | Quantas issues abertas (as mais recentes) |
+| `--days N` | `30` | Só issues criadas nos últimos N dias |
+| `--model jev\|laya` | `jev` | Modelo de decisão |
+| `--threshold 0.5` | `0.5` | P(bug) a partir da qual conta como bug |
+
+**`fixer.py`**: sugestão de fix pelo terminal (ver [7.9](#79-sugestão-de-fix-sistema-2)).
+
+| Opção | O que faz |
+|---|---|
+| `--repo owner/nome --issue N` | Gera a sugestão para a issue N e imprime o JSON |
+| `--eval issue:pr,issue:pr,…` | Mede a localização em bugs resolvidos, comparando com os arquivos do PR |
+| `--llm claude` \| `--llm ollama:qwen2.5:7b` | Provedor (padrão: `claude` se houver chave, senão o qwen local) |
+| `--no-symbols` / `--no-defs` | Desligam o mapa de símbolos / seguir definições (para comparar antes × depois) |
+| `--no-second-round` | Desliga a 2ª rodada (quando o LLM diz que o código mostrado não tem o bug) |
+
 **`audit.py`**: confere tudo (ver [11](#11-auditoria)).
 
 | Opção | O que faz |
@@ -213,7 +255,37 @@ reconhecer o mesmo conjunto.
 
 ## 6. A interface campo por campo
 
-### Barra lateral → **1 · Dados**
+### Página **🩺 Triagem**
+
+**Entrada:**
+
+| Campo | O que é |
+|---|---|
+| **Repositório (owner/nome)** | De onde buscar as issues |
+| **Quantas issues** | As N issues **abertas** mais recentes (5 a 100) |
+| **Criadas nos últimos (dias)** | Janela de criação, para focar no que é atual |
+| **Ignorar issues com estas labels** | Opcional: pula issues que já tenham alguma dessas labels (ex.: já triadas) |
+| **Modelo de decisão** | `jev` (se houver chave) ou `laya` |
+| **Threshold** | P(bug) a partir da qual a issue conta como bug |
+| **LLM da sugestão de fix** | `desligada`, `claude` (Claude via API, se houver `ANTHROPIC_API_KEY`) ou um modelo local `ollama:*` |
+| **Sugerir fix automaticamente para bugs alta/crítica (até 5)** | Gera a sugestão logo depois da classificação. Ligado por padrão só com Claude: com modelo local, cada sugestão leva minutos |
+| **Analisar** | Busca, limpa, faz as três perguntas a cada issue, salva a análise e, se pedido, gera as sugestões de fix |
+
+**Resultado:**
+
+| Elemento | O que mostra |
+|---|---|
+| **Análise exibida** | Qual análise salva mostrar (as anteriores continuam disponíveis) |
+| **Threshold para análise** | Muda o corte e recalcula classe e revisão humana **sem chamar o modelo de novo** |
+| **Resumo** | Issues analisadas, bugs, bugs de severidade alta ou crítica, quantas vão para revisão humana |
+| **Mostrar / Severidade** | Filtros da tabela |
+| **Tabela** | Uma linha por issue: link, severidade (🔴 crítica, 🟠 alta, 🟡 média, ⚪ baixa), 👤 revisão humana, classe, P(bug), título, motivos, P(info suficiente), data. Bugs primeiro, do mais grave ao mais leve |
+| **Baixar CSV** | A tabela filtrada |
+| **Coluna fix** | 🛠️ N% = há sugestão, com o grau de confiança calculado (alta ≥ 70%, média 40–69%, baixa < 40%); ⚠️ = a geração falhou |
+| **Detalhe** (clique numa linha) | P(bug), severidade com a probabilidade de cada nível, P(info suficiente), motivos da revisão humana e o texto **original × limpo** |
+| **🛠️ Sugestão de fix** (no detalhe) | Escolha do LLM + botão **Sugerir fix** / **Gerar de novo**. Mostra: grau de confiança calculado (com o detalhamento), código achado?, tempo e custo; o diagnóstico, onde está a causa (arquivo com link para o GitHub no commit lido, e função), a sugestão de correção em texto, riscos e alternativas, como verificar; e, num painel, como a sugestão foi montada (pistas, candidatos, arquivos escolhidos, tokens) |
+
+### Página **📊 Avaliação**: barra lateral → **1 · Dados**
 
 | Campo | O que é | Detalhes |
 |---|---|---|
@@ -387,6 +459,234 @@ Cada previsão é comparada com o `gold` e as métricas são calculadas por mode
 [seção 9](#9-métricas-o-que-cada-número-significa)). Tudo é gravado em
 `results/runs/<data-hora>/` (ver [seção 10](#10-o-que-fica-salvo-arquivos-de-saída)).
 
+### 7.8 Triagem: três perguntas e a regra de revisão humana
+
+A página Triagem (e `triage.py`) usa o mesmo pipeline com três diferenças: busca issues **abertas**,
+faz **três perguntas numa única chamada** e decide quem precisa de um humano.
+
+1. **Busca** (`fetch_open()` em `fetch_issues.py`): Search API com
+   `repo:… is:issue is:open created:>=<hoje − N dias>`, mais novas primeiro, sem PRs e sem issues
+   com as labels a ignorar. Não grava nada; o resultado vai junto com a análise.
+2. **Limpeza:** a mesma da [seção 8](#8-a-limpeza-do-texto-regra-por-regra).
+3. **Perguntas** (`QUESTIONS` em `triage.py`), numa chamada só ao Jev ou à Laya:
+
+   | Pergunta | Tipo | Resposta |
+   |---|---|---|
+   | *Does this issue describe a defect (bug) in the software's behavior?* | Noul | P(bug) |
+   | *How severe is the problem described in this issue?* | Score: baixa / média / alta / crítica, cada nível com uma descrição | Probabilidade de cada nível; vale o mais provável |
+   | *Does the issue give enough information to reproduce the problem?* | Noul | P(info suficiente) |
+
+4. **Decisão** (`decide()` e `human_review()`), feita na hora de mostrar, sobre as respostas salvas:
+   - **Classe:** bug se P(bug) ≥ threshold.
+   - **Severidade:** só é exibida se P(bug) ≥ 0,2 (não faz sentido para o que claramente não é bug).
+   - **Revisão humana**, quando qualquer motivo abaixo vale (a tabela lista quais):
+
+     | Motivo | Quando |
+     |---|---|
+     | incerto se é bug | 0,2 < P(bug) < 0,8 |
+     | severidade incerta | o nível escolhido tem probabilidade < 0,5 |
+     | falta informação para reproduzir | é bug e P(info suficiente) < 0,5 |
+     | bug crítico | é bug de severidade crítica (sempre passa por um humano) |
+
+**Por que "confiança" = probabilidade do nível escolhido:** Jev e Laya devolvem um campo
+`confidence`, mas cada um com uma fórmula diferente. Na mesma issue, a Laya deu 0,19 de
+`confidence` e 0,42 de probabilidade para o nível escolhido. A probabilidade é comparável entre os
+dois modelos, então a regra vale igual para ambos.
+
+Cada análise é salva em `results/triage/<data-hora>__<owner>__<repo>.json` com os parâmetros, as
+respostas brutas do modelo e o texto das issues, e pode ser reaberta na página.
+
+### 7.9 Sugestão de fix (Sistema 2)
+
+`fixer.py` faz um LLM tradicional ler o código do repositório, analisar a causa do bug e sugerir a
+correção **em texto**, como um mantenedor faria num comentário de revisão: onde está o problema
+(arquivo e função), o que mudar e por quê, riscos e como verificar. **Não gera patch** (diff): a
+decisão de como implementar fica com quem lê. Ele **não executa nada** do repositório e **não toca
+no GitHub** (não comenta, não abre PR).
+
+1. **Clone raso** (`git clone --depth 1`) em `~/.cache/sad-poc/repos/` (fora da pasta do projeto,
+   ver o aviso sobre iCloud em [16](#16-limitações-conhecidas)), reaproveitado por 12 h. Hooks
+   desligados e symlinks gravados como arquivos comuns: um link no repositório não consegue fazer a
+   aplicação ler arquivos fora do clone.
+2. **Pistas da issue** (`clues()`):
+   - caminhos de arquivo citados;
+   - identificadores (entre crases, `snake_case`, `CamelCase`);
+   - trechos de mensagens de erro;
+   - palavras do título, casadas com nomes de arquivo (bugs de interface raramente citam código);
+   - **frames de stack trace** (`raw_frames()`): Python (`File "…", line N, in f`), IPython/Jupyter
+     (`File …:N, in f`), JS/TS (`at f (arquivo:N:C)`), Java/Kotlin (`at a.B.f(B.java:N)`) e Go.
+     O caminho da máquina do usuário (`…/site-packages/pandas/core/x.py`) é casado com o arquivo
+     do repositório pelo final do caminho (`map_frames()`), aceitando só quando aponta um único arquivo.
+3. **Candidatos** (`candidates()`): cada pista vira busca com `git grep` ou casamento de nome, e os
+   arquivos ganham pontos:
+
+   | Pista | Pontos |
+   |---|---|
+   | arquivo de um frame do traceback | +12 (o frame mais interno, +4 a mais) |
+   | caminho citado na issue | +10 |
+   | **define** um nome usado como código na issue (`def nome`, `class nome`, `function nome`, `cdef … nome(`…) | +8 (+4 se 3–5 arquivos o definem) |
+   | contém a mensagem de erro | +5 |
+   | usa um identificador raro / comum | +3 / +1 |
+   | palavra do título no nome do arquivo | +2 |
+   Quem **define** pesa mais do que quem só **usa**: na Airflow #74851, `_find_path_from_directory`
+   aparece em vários arquivos, mas é definida em um só, que é o do bug. A busca de definições vale só
+   para nomes que a issue usa claramente **como código** (entre crases ou seguidos de `(`) e para as
+   funções do traceback. Um `snake_case` solto costuma ser campo de dado: na #74712, um JSON colado
+   trazia `map_index` e `start_date`, que vários modelos definem, e eles empurravam o arquivo certo
+   para baixo. Nomes definidos em mais de 5 arquivos (`__init__`, `render`) e identificadores usados
+   em mais de 40 são ignorados, por serem genéricos demais. Saem os 30 melhores, cada um com o motivo.
+4. **Passo 1, localizar:** o LLM recebe a issue limpa, os candidatos, um resumo das pastas e o
+   **mapa de símbolos**, e escolhe até 5 arquivos. Caminhos que não existem no repositório são
+   descartados (e listados). Se ele não escolher **nenhum** arquivo do traceback, o do frame mais
+   interno entra automaticamente (o traceback é a pista mais forte).
+   - **Mapa de símbolos** (`symbol_map()`): as classes e funções definidas em cada candidato, com a
+     linha. Assim o LLM vê o que cada arquivo faz, não só o nome dele. A extração é por regex, sem
+     parser, para Python, Cython (`.pyx`/`.pxd`), Go, Rust, Ruby, PHP, TS/JS e Java/Kotlin/Scala/C#. Ocupa até 1/3 do
+     orçamento de caracteres.
+5. **Passo 2, propor:** o LLM recebe a issue, o conteúdo desses arquivos e as **definições
+   seguidas um nível**.
+   - **Recorte de arquivos grandes** (`file_blobs()`): arquivo pequeno vai inteiro. No grande, entra
+     primeiro a **função que contém cada linha citada no traceback** (inteira até 150 linhas, ou ±30
+     linhas em volta), depois a **definição completa de cada função citada na issue** (até 150 linhas), e depois,
+     se couber, janelas de ±40 linhas em volta das pistas **raras** naquele arquivo. Um termo que
+     aparece mais de 10 vezes (como `int64`) não puxa recorte: sem essa regra, na pandas #71444 o
+     orçamento se esgotava nos imports do topo e a função com o bug nunca chegava ao LLM. O 1º
+     arquivo escolhido fica com metade do orçamento. Ele
+   responde num **esquema JSON fixo**: diagnóstico; onde está a causa (arquivo, função, motivo);
+   a sugestão de correção em texto (o que mudar e por quê, podendo citar uma ou duas linhas do código
+   existente, mas sem diff); riscos e alternativas; como verificar; confiança, motivo da confiança e
+   se o código foi achado. O prompt pede que a sugestão respeite como o código em volta já trata
+   casos parecidos.
+   - **Seguir definições** (`follow_definitions()`): para as funções e classes **usadas** no código
+     enviado e definidas em **outro** arquivo, inclui o trecho da definição (até 40 linhas). É o
+     primeiro nível da interação entre arquivos.
+     - **Pelo import** (o caminho mais confiável): `from a.b import X` (Python) ou
+       `import { X } from './y'` (TS/JS) levam ao arquivo exato.
+     - **Pela mesma área:** nomes sem import só valem se a definição estiver nas mesmas duas pastas
+       de topo de um arquivo escolhido, fora de testes. Isso evita puxar um homônimo qualquer.
+     - **Chamadas de método** (`obj.read()`) não contam, porque o nome sozinho não diz de qual
+       classe é.
+     - Ficam com até 1/4 do orçamento; os arquivos escolhidos, com o resto.
+     - Exemplo real: na #74712 do Airflow, o LLM escolheu `ClearTaskInstanceDialog.tsx`, e o
+       import trouxe a definição de `ClearTaskInstanceConfirmationDialog.tsx`, o arquivo do bug.
+   - **2ª rodada** (só quando o LLM responde "código achado: não"): ele recebe a lista do que já viu
+     e pede até 5 nomes de função/classe ou caminhos para procurar; o programa resolve cada um
+     (`resolve_search()`: caminho existente → quem define o nome → quem usa o nome, se for raro),
+     mostra os arquivos novos e pede a proposta de novo, uma vez só. A sugestão final é a da 2ª
+     rodada só se nela o código foi achado; senão, continua a da 1ª. Custa uma ou duas chamadas a
+     mais (no 7B local, +60 a 100 s) e só acontece quando a 1ª falhou. A tela mostra as rodadas.
+     Limite observado: modelos de 7B às vezes pedem os mesmos arquivos de novo, e aí não há 2ª
+     tentativa ("os nomes pedidos não levaram a arquivos novos").
+
+   **Medição (10/11/2026, `qwen2.5-coder:7b`, 16k, 5 bugs do Airflow):** escolheu o arquivo certo
+   em 3/5, viu o arquivo certo (escolhidos + definições) em 4/5, patch útil 0/5, mesmos números
+   de antes das três melhorias. Nenhum desses 5 bugs traz traceback, então o ganho de lá não
+   aparece aqui; a 2ª rodada rodou em 2 e não mudou o resultado (na #74851 o modelo tinha o
+   arquivo certo e mesmo assim disse que o código não estava ali). Onde a melhoria apareceu foi na
+   pandas #71485, que tem traceback: o arquivo do erro mais interno (`timezones.pyx`) foi para o
+   1º lugar dos candidatos e a linha exata do bug chegou ao prompt, mas o 7B não a reconheceu.
+   Conclusão: a busca entrega o código certo com mais frequência; o gargalo agora é o modelo.
+6. **Grau de confiança** (`confidence()`, 0–100%): calculado pelo programa, não declarado pelo LLM.
+   Soma pontos de checagens que conferem a sugestão contra o código e contra pistas independentes da
+   issue. O que o LLM consegue "acertar" só repetindo o que leu vale pouco; o que vem da issue vale mais:
+
+   | Checagem | Peso |
+   |---|---|
+   | O arquivo apontado tem apoio na issue: com traceback, é o do frame mais interno (vale tudo) ou outro frame (1/4); sem traceback, está entre os 3 melhores candidatos | 30 |
+   | A função apontada **contém o ponto do erro**: o nome entre aspas da mensagem de erro (`'total_seconds'`) ou, sem ele, um nome citado como código na issue aparece no corpo dela (sem nada para conferir: meio ponto) | 20 |
+   | O LLM diz que achou o código do bug | 10 |
+   | Os arquivos apontados foram lidos por ele | 10 |
+   | A função apontada existe no arquivo | 10 |
+   | A função apontada estava no trecho lido | 10 |
+   | O diagnóstico cita a função ou o arquivo apontado | 5 |
+   | Resolvido na 1ª rodada | 5 |
+
+   A confiança **declarada** pelo LLM saiu da conta em 11/11/2026: no teste com 8 bugs resolvidos, o
+   `qwen2.5:7b` disse "alta" nos 8, inclusive nos que errou. Os 5 pontos dela foram para a checagem do
+   arquivo (de 25 para 30), que vem de pistas independentes da issue.
+   Alta ≥ 70%, média 40–69%, baixa < 40%. Se o LLM diz que não achou o código, o grau fica limitado
+   a 35%.
+
+   **Teto pelo que a issue já entrega** (`issue_diagnosis()`, desde 11/11/2026). Sem LLM, o programa
+   classifica a issue em três níveis, e o nível limita o grau:
+
+   | Nível | Como é detectado | Teto |
+   |---|---|---|
+   | **Traz o diagnóstico** | explica a causa ("the cause", "root cause", "caused by", "returns None", "proposed fix"…; "because" sozinho não conta, porque costuma explicar a consequência, não a causa) **e** cita nomes ou arquivos que existem no repositório | 100% |
+   | **Só aponta o código** | tem traceback ou cita nomes do repositório, mas não explica a causa | 60% |
+   | **Sem pistas de código** | nenhum dos dois | 35% |
+
+   Motivo: na comparação de 11/11/2026 (8 bugs resolvidos, 3 modelos locais e a análise do código
+   feita à mão), os modelos acertaram a correção quase só onde o usuário já tinha explicado a causa
+   (#75013, #74851, #74601, #71459) e erraram todas as que exigiam investigar (#74712, #74703,
+   #71189). Recalculando os graus salvos com esse teto, o grau médio das sugestões que **não resolvem**
+   caiu de 62% para 47%, e as erradas com grau "alta" caíram de 4 para 1; as que resolvem seguiram
+   em 100%. Cuidado: as regras foram ajustadas nessas mesmas 8 issues, então ainda falta medir em
+   issues novas. A tela mostra o nível, os sinais encontrados e o teto aplicado, e a coluna "fix" da
+   tabela mostra o grau.
+
+   **Refeita em 12/11/2026 com o código de antes do fix.** A comparação de 11/11 lia o clone atual,
+   que já tinha a correção. Refazendo as 24 sugestões (3 modelos × 8 issues) no commit anterior ao
+   de cada PR, a localização quase não mudou:
+
+   | Modelo | Arquivo certo (11/11 → 12/11) | Função certa | Grau médio |
+   |---|---|---|---|
+   | `qwen2.5-coder:14b` | 6/8 → 6/8 | 4 → 5 | 70% → 70% |
+   | `qwen2.5-coder:7b` | 6/8 → 5/8 | 4 → 4 | 74% → 61% |
+   | `qwen2.5:7b` | 6/8 → 6/8 | 5 → 5 | 86% → 74% |
+
+   Os graus de 11/11 eram dos pesos daquele dia, sem o teto, então a queda vem em parte do teto. As
+   mesmas issues seguem erradas por todos (#74712 e #74703, sem pistas de código), e a conclusão que
+   motivou o teto continua de pé. A avaliação manual de 11/11 não foi refeita.
+   Exemplo (pandas #71485, `qwen2.5-coder:7b`, pesos de 10/11/2026): o LLM apontou `tz_localize_to_utc` em
+   `tzconversion.pyx` e declarou confiança "alta". O grau deu **61% (média)**: esse arquivo é um frame
+   do traceback, mas não o mais interno, e a função não contém `total_seconds`. Apontar
+   `get_dst_info` em `timezones.pyx`, que contém, daria 100%. Na primeira versão dos pesos, a mesma
+   resposta errada tirava 92%, porque só se conferia se o LLM citava o que tinha lido.
+   **O grau mede o quanto a sugestão está apoiada no código e nas pistas, não se ela está certa:**
+   isso só um teste confirma.
+7. **Sem patch** (desde 10/11/2026): a primeira versão pedia um diff e o conferia com
+   `git apply --check`. Em 15 tentativas com modelos locais (qwen 7B, coder 7B e 14B), nenhum diff
+   corrigia o bug; o único que encaixou era num arquivo errado. A análise em texto é o que esses
+   modelos entregam com utilidade, e é o que um sistema de apoio à decisão precisa: apontar onde e
+   o quê, e deixar a implementação com o mantenedor.
+8. **Testadas e descartadas** (11/11/2026, `qwen2.5-coder:7b`, 8 bugs resolvidos do Airflow e do
+   pandas, com e sem cada ideia):
+   - **Histórico do git** (+3 para candidatos alterados até 14 dias antes da issue, com o assunto do
+     commit como pista): não mudou o acerto em 7 issues e piorou a #74712 (o arquivo certo caiu da 16ª
+     para a 27ª posição, e a melhor sugestão para ela se perdeu). No Airflow, mais de mil arquivos
+     mudam a cada 2 semanas, e o commit que causou a regressão mexeu em 121 arquivos.
+   - **Conferência pelo próprio LLM** (uma chamada a mais: "a sugestão produz o que a issue espera?"):
+     respondeu "parcial" nas 8, inclusive na sugestão errada da #71189. Sem variar, não separa
+     sugestão boa de ruim, e custava ~40 s por sugestão. Pode valer com um modelo maior.
+
+**Provedores, escolhidos explicitamente (nunca um no lugar do outro):**
+
+| Opção | O que é | Custo | Qualidade |
+|---|---|---|---|
+| `claude` | Claude via API (`ANTHROPIC_API_KEY`), modelo em `FIX_MODEL` (padrão `claude-opus-5-5`, US$ 4 / US$ 20 por milhão de tokens de entrada / saída). Saída validada por esquema; se o modelo recusar a tarefa, o próprio servidor tenta outro modelo na mesma chamada (`fallbacks`, registrado em `served_by`) | centavos por sugestão (o valor aparece na tela) | a esperada para corrigir código |
+| `ollama:<modelo>` | Modelo local, com o mesmo esquema JSON | zero | fraca: o `qwen2.5-coder:7b` localiza o arquivo em 3–4 de 5 bugs, mas o diagnóstico muitas vezes erra a função ou a causa |
+
+**Prompt injection:** a issue e o código entram em tags (`<issue>`, `<file>`), e o prompt de sistema
+manda tratá-los como dados, nunca como instruções. O LLM não tem ferramentas: só devolve texto
+naquele formato.
+
+**Medição de localização** (portão 2 do plano): em bugs **já resolvidos**, o LLM aponta os arquivos
+que o PR de correção alterou? Mede só a localização, porque o clone já contém a correção.
+
+```bash
+python fixer.py --repo apache/airflow --eval 75013:75016,74851:74853,74712:74725,74703:74734,74601:74810
+```
+
+### 7.10 Código de antes do fix
+
+Numa issue fechada, o clone atual já tem a correção, e a sugestão "acertaria" lendo o código
+consertado. Por isso, quando a issue está fechada e há PR mesclado ligado a ela (timeline do GitHub),
+a sugestão de fix lê uma cópia do repositório no commit anterior ao do PR (`git worktree` em
+`~/.cache/sad-poc/repos/<repo>__antes-<commit>`), e a tela avisa isso ao lado do commit. Para
+escolher issues fechadas, use o campo **Ou só estas issues** da Triagem (ex.: `74851` em
+`apache/airflow`).
+
 ---
 
 ## 8. A limpeza do texto, regra por regra
@@ -517,6 +817,8 @@ Usada **só quando a issue não cabe no modelo** (na prática, a Laya) **e** o r
 | `data/datasets/<owner>__<repo>.jsonl` | Um conjunto por repositório (usado pela interface) |
 | `data/datasets/apache__airflow.review.json` | Revisão manual dos rótulos das 20 issues do Airflow |
 | `data/summaries.jsonl` | Cache dos resumos do Ollama |
+| `results/triage/<data-hora>__<owner>__<repo>.json` | Cada análise da página Triagem: parâmetros, respostas do modelo, texto das issues e, em `fixes`, as sugestões de fix |
+| `~/.cache/sad-poc/repos/<owner>__<repo>/` | Clones rasos usados pela sugestão de fix (reaproveitados por 12 h; podem ser apagados). Pasta configurável por `SAD_REPOS_DIR` |
 
 `data/` e `results/` não vão para o git: são regenerados pelos scripts.
 
@@ -565,10 +867,13 @@ Copie `.env.example` para `.env` e preencha o que precisar. **O `.env` nunca vai
 | `GITHUB_TOKEN` | *(vazio → usa o `gh`)* | Baixar issues sem o limite de 60 req/h |
 | `TYPESAFE_API_KEY` | *(vazio → Jev desligado)* | Chave do Jev |
 | `TYPESAFE_BASE_URL` | `https://api.typesafe.ai` | Endereço da API (ou de um gateway) |
-| `TYPESAFE_MODEL` | `jev-latest` | Versão do Jev (`jev-latest`, `jev-preview` ou uma versão fixa, como `jev-1.13.0`) |
+| `TYPESAFE_MODEL` | `jev-latest` | Versão do Jev (`jev-latest`, `jev-preview` ou uma versão fixa, como `jev-1.13.0`). Atenção: em 08/11/2026 o `jev-latest` passou a apontar para o `jev-1.14.0`, enquanto as avaliações de outubro usaram o 1.13.0. Para comparar execuções, fixe a versão |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | LLM do baseline e dos resumos |
 | `OLLAMA_URL` | `http://localhost:11434` | Endereço do Ollama |
-| `OLLAMA_NUM_CTX` | `16384` | Contexto do Ollama em tokens (o padrão dele, 4.096, falha em issues longas) |
+| `ANTHROPIC_API_KEY` | *(vazio → só modelos locais no fix)* | Chave da API do Claude para a sugestão de fix |
+| `FIX_MODEL` | `claude-opus-5-5` | Modelo Claude da sugestão de fix |
+| `OLLAMA_NUM_CTX` | `16384` | Contexto do Ollama em tokens (o padrão dele, 4.096, falha em issues longas). No fix, a quantidade de código no prompt acompanha esse valor (~28 mil caracteres em 16k). Num Mac de 16 GB, use `8192` para o `qwen2.5-coder:14b` caber inteiro na GPU |
+| `OLLAMA_TIMEOUT` | `900` | Tempo máximo (s) de cada chamada ao Ollama no fix |
 
 Depois de mudar o `.env`, **reinicie** o `streamlit run` para a interface ler os valores novos.
 
@@ -624,7 +929,12 @@ poc-decisao/
 ├── clean.py             Limpeza por regex + resumo via Ollama                       (seção 8)
 ├── models.py            Laya, Jev e Ollama com a mesma interface ask_noul()        (seção 7.4)
 ├── run_eval.py          evaluate(), métricas e o relatório no terminal              (seções 7.5–7.7)
-├── app.py               Interface gráfica (Streamlit)                               (seção 6)
+├── app.py               Entrada do app: menu com as páginas Triagem e Avaliação     (seção 4)
+├── views/triagem.py     Página Triagem (v2)                                         (seções 6, 7.8)
+├── views/avaliacao.py   Página Avaliação (a interface original)                     (seção 6)
+├── shared.py            Laya carregada uma vez, compartilhada entre as páginas
+├── triage.py            Triagem: três perguntas, revisão humana; também pelo terminal (seção 7.8)
+├── fixer.py             Sugestão de fix: clone, pistas, LLM localiza e propõe      (seção 7.9)
 ├── audit.py             Auditoria offline e ao vivo                                 (seção 11)
 ├── README.md            Este manual
 ├── RESULTADOS.md        Números e conclusões das avaliações
@@ -653,6 +963,11 @@ poc-decisao/
 - **Jev não é 100% determinístico:** varia até ~0,03 na probabilidade.
 - **GPU compartilhada:** rodar duas avaliações ao mesmo tempo (ex.: terminal e interface) infla as
   latências locais. A auditoria avisa quando isso acontece.
+- **Projeto em pasta sincronizada com o iCloud (ex.: na Mesa):** com pouco espaço livre, o macOS
+  tira arquivos do disco (ficam só na nuvem) e precisa baixá-los a cada leitura. Aqui isso fez
+  uma busca de 1 s levar 84 s e uma importação de Python levar 100 s. Os clones do fix já ficam
+  fora do projeto (`~/.cache/sad-poc/repos`). Para o resto (`.venv`, `data/`), o ideal é mover o
+  projeto para uma pasta fora do iCloud (ex.: `~/dev/`) ou liberar espaço em disco.
 - **Recarregamento da interface desligado** (`.streamlit/config.toml`): o vigia de arquivos do
   Streamlit reiniciava a página no meio das avaliações. Depois de editar o código, reinicie.
 
@@ -672,6 +987,7 @@ poc-decisao/
 | Porta 8501 ocupada | Outra interface já está aberta | `streamlit run app.py --server.port 8502` |
 | A interface não mostra uma mudança no código | Recarregamento desligado | `Ctrl+C` e `streamlit run app.py` de novo |
 | Latência estranha | Duas avaliações ao mesmo tempo, ou cache do Ollama | `python audit.py` mostra a causa |
+| Tudo lento (página, buscas, importações) com CPU baixa | Projeto numa pasta do iCloud com pouco espaço em disco | Mover o projeto para fora do iCloud ou liberar espaço ([16](#16-limitações-conhecidas)) |
 | `git: not a git repository` | O terminal está na pasta de cima | `cd poc-decisao` antes do comando |
 
 ---
